@@ -228,10 +228,11 @@ liuliang
 # 将流量计数账本归零
 /sbin/iptables -Z TRAFFIC_MONITOR
 
-```
-2. 查看后台定时任务运行日志
+
+# 查看后台定时任务运行日志
 检查脚本在后台是否有每 5 分钟准时“打卡”记录：
 
+```
 Bash
 tail -n 10 /var/log/traffic_quota.log
 
