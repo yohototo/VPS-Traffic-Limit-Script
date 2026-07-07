@@ -1,29 +1,29 @@
-Here is the complete, fully polished **English version** of the README. It is tailored for your fully automated, robust traffic-monitoring system on GCP Debian instances. You can save this as `README.md` for your future reference or GitHub repositories.
+这里为您整理了一份最新的 **README 中文指南**。
+
+由于考虑到不同用户的实际需求（有些 VPS 商家是按“开机日”每 30 天滚动计费，而 GCP 等商家是严格按“自然月每月 1 日”计费），本指南同时收录了 **【版本 A：GCP 每月 1 日自然月重置版】** 和 **【版本 B：固定 30 天轮询重置版】**，并统一集成了“智能网卡自适应”与“计费开始/截止时间看板”功能。
 
 ---
 
-# GCP Debian Instance Outbound Traffic Limiter & Auto-Block Guide (Smart Adaptive Version)
+# GCP / 独立 VPS 出站流量限制与断网保护指南 (双版本通用完全体)
 
-This guide provides a comprehensive outbound traffic monitoring and network-kill solution tailored for **Debian** (and other mainstream Linux) VPS instances.
+本方案利用 Linux 内核级的 `iptables` 流量计数器精确统计服务器流出的总公网数据量。当累积出站流量超过设定阈值（默认 **190 GB**）时，系统会自动触发断网保护，**切断除 SSH 远程连接（22端口）以外的所有出站流量**，彻底杜绝高额账单风险。
 
-Since Google Cloud Platform (GCP) enforces strict data egress quotas with expensive overage fees, this solution leverages Linux kernel-level `iptables` to accurately track total data leaving your instance. When the cumulative outbound traffic within a 30-day billing cycle exceeds your defined threshold (default: **190 GB**), the system automatically triggers a network-kill protection, **blocking all outbound traffic except for SSH connections**. This completely eliminates the risk of unexpected cloud bill spikes.
+## ✨ 完全体核心优势
 
-## 🌟 Key Features of the Ultimate Version
-
-1. **Smart Interface Auto-Detection**: The script dynamically detects the active primary network interface (e.g., `ens4` or `eth0`) using `ip route`. **No hardcoded interface names required; zero risk of selecting the wrong network card.**
-2. **Absolute Path Resolution**: Core commands explicitly use absolute paths (e.g., `/sbin/iptables`), completely fixing the classic `command not found` errors triggered by the stripped-down environment of后台 `crontab` daemons.
-3. **Robust Multi-Line Filtering**: Data extraction utilizes precise string matching coupled with `tail -n 1`, preventing script crashes and syntax errors (`integer expression expected`) caused by redundant firewall rules.
-4. **Convenient CLI Alias**: Run `liuliang` from any directory to instantly check your current active network interface and precise bandwidth consumption (up to 4 decimal places).
+1. **智能网卡自适应**：自动识别承载外网流量的真实网卡名称（如 `ens4` 或 `eth0`），无需人工硬编码。
+2. **可视化周期看板**：手动输入 `liuliang` 即可秒级查看当前识别到的网卡、精确的**流量计算开始与截止时间**以及当前用量。
+3. **绝对路径适配**：核心命令全部改用 `/sbin/` 绝对路径，彻底解决后台 `crontab` 定时任务找不到命令（`command not found`）的经典报错。
+4. **多行健壮性过滤**：数据提取加入了精准过滤限制，完美解决因多条重复防火墙规则导致脚本报整数表达式错误（`integer expression expected`）的问题。
 
 ---
 
-## 🛠️ Step-by-Step Setup Guide
+## 🛠️ 从零配置步骤
 
-Log in to your GCP Linux instance as the **`root`** user and execute the following four steps in order:
+请以 **`root`** 用户身份登录您的 Linux 实例，依次执行以下步骤：
 
-### Step 1: Initialize System Locale (Fix Warnings)
+### 第一步：初始化系统语言环境（消除警告）
 
-To prevent Debian from throwing annoying `setlocale: LC_ALL: cannot change locale` warnings during execution, run the following commands to configure the system locale properly:
+一键修复 Debian/Ubuntu 系统由于缺少英文语言包频繁报出 `setlocale: LC_ALL` 警告的问题：
 
 ```bash
 apt update && apt install -y locales
@@ -34,83 +34,148 @@ export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
 ```
 
-### Step 2: Deploy the Smart Monitoring Script
+---
 
-Copy and paste the entire block below into your terminal. This automatically writes the script into the global executable directory, enables automatic interface discovery, and grants execution permissions:
+### 第二步：根据计费规则，选择以下【一个】版本写入脚本
+
+#### 方案 A：GCP 专属自然月版（每月 1 日 0 点自动清零）
+
+* **适用场景**：Google Cloud (GCP) 等严格按照**自然月**（每月 1 号到当月最后一天）计算免费额度和账单的商家。
+* **特点**：计费周期自动对齐本月 1 号至最后一天。跨月时脚本首次运行会自动清零计数器，不需要人工干预。
+
+直接复制并执行以下整块命令写入：
 
 ```bash
 cat << 'EOF' > /usr/local/bin/traffic_quota.sh
 #!/bin/bash
 
 # ==========================================
-# Configuration Parameters
+# ⚙️ 用户自定义配置
 # ==========================================
-QUOTA_GB=190  # Maximum allowed outbound traffic threshold (in GB)
+QUOTA_GB=190  # 允许出站流量阈值（单位：GB）
 
 # ==========================================
-# ⚡ Smart Network Interface Auto-Detection
+# 🗓️ 自动计算 GCP 自然月周期
 # ==========================================
-# Dynamically fetch the primary interface handling default outbound routes
+START_DATE=$(date +"%Y-%m-01 00:00:00")
+END_DATE=$(date -d "$(date +'%Y-%m-01') +1 month -1 day" +"%Y-%m-%d 23:59:59")
+CURRENT_MONTH=$(date +"%Y-%m")
+
+# ==========================================
+# ⚡ 智能网卡自动识别与初始化
+# ==========================================
 INTERFACE=$(/sbin/ip route show | grep default | awk '{print $5}' | tail -n 1)
+if [ -z "$INTERFACE" ]; then echo "无法自动识别外网网卡"; exit 1; fi
 
-if [ -z "$INTERFACE" ]; then
-    echo "Error: Unable to auto-detect the public network interface."
-    exit 1
+/sbin/iptables -N TRAFFIC_MONITOR 2>/dev/null
+if ! /sbin/iptables -C OUTPUT -o "$INTERFACE" -j TRAFFIC_MONITOR 2>/dev/null; then
+    /sbin/iptables -A OUTPUT -o "$INTERFACE" -j TRAFFIC_MONITOR
+fi
+
+# 跨月自动清零检查
+LAST_MONTH_FILE="/var/run/traffic_monitor_month.txt"
+[ -f "$LAST_MONTH_FILE" ] && LAST_MONTH=$(cat "$LAST_MONTH_FILE") || LAST_MONTH=""
+if [ "$CURRENT_MONTH" != "$LAST_MONTH" ]; then
+    /sbin/iptables -F TRAFFIC_MONITOR && /sbin/iptables -Z TRAFFIC_MONITOR
+    echo "$CURRENT_MONTH" > "$LAST_MONTH_FILE"
 fi
 
 # ==========================================
-# Automatic Firewall Chain Initialization
+# 📊 流量统计与看板输出
 # ==========================================
+CURRENT_BYTES=$(/sbin/iptables -L OUTPUT -v -n -x | grep "TRAFFIC_MONITOR" | awk '{print $2}' | tail -n 1)
+[ -z "$CURRENT_BYTES" ] && CURRENT_BYTES=0
+CURRENT_GB=$(awk -v bytes="$CURRENT_BYTES" 'BEGIN {printf "%.4f", bytes / 1024 / 1024 / 1024}')
+
+echo "=================================================="
+echo " 网卡设备: ${INTERFACE}"
+echo " 计费周期: [ ${START_DATE} ] 至"
+echo "           [ ${END_DATE} ] (GCP自然月)"
+echo " 流量状态: ${CURRENT_GB} GB / 限额 ${QUOTA_GB} GB"
+echo "=================================================="
+
+QUOTA_BYTES=$(( QUOTA_GB * 1024 * 1024 * 1024 ))
+if [ "$CURRENT_BYTES" -gt "$QUOTA_BYTES" ]; then
+    echo "警告：流量已超过限额！正在实施断网保护..."
+    if ! /sbin/iptables -C TRAFFIC_MONITOR -p tcp --dport 22 -j ACCEPT 2>/dev/null; then
+        /sbin/iptables -I TRAFFIC_MONITOR -p tcp --sport 22 -j ACCEPT
+        /sbin/iptables -I TRAFFIC_MONITOR -p tcp --dport 22 -j ACCEPT
+        /sbin/iptables -A TRAFFIC_MONITOR -j DROP
+        echo "断网保护已生效。仅保留 SSH 连接。"
+    fi
+fi
+EOF
+chmod +x /usr/local/bin/traffic_quota.sh
+
+```
+
+---
+
+#### 方案 B：固定 30 天轮询版（不随自然月漂移，精准每 30 天清零）
+
+* **适用场景**：部分按“开机日/购买日”起算每 30 天为一个计费周期的独立 VPS 商家。
+* **特点**：计费周期显示为“当前时间”至“30天后”。依靠系统的 `Crontab` 强制每 30 天清零账本。
+
+直接复制并执行以下整块命令写入：
+
+```bash
+cat << 'EOF' > /usr/local/bin/traffic_quota.sh
+#!/bin/bash
+
+# ==========================================
+# ⚙️ 用户自定义配置
+# ==========================================
+QUOTA_GB=190  # 允许出站流量阈值（单位：GB）
+
+# ==========================================
+# 🗓️ 滚动计算 30 天周期时间
+# ==========================================
+START_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+END_DATE=$(date -d "+30 days" +"%Y-%m-%d %H:%M:%S")
+
+# ==========================================
+# ⚡ 智能网卡自动识别与初始化
+# ==========================================
+INTERFACE=$(/sbin/ip route show | grep default | awk '{print $5}' | tail -n 1)
+if [ -z "$INTERFACE" ]; then echo "无法自动识别外网网卡"; exit 1; fi
+
 /sbin/iptables -N TRAFFIC_MONITOR 2>/dev/null
 if ! /sbin/iptables -C OUTPUT -o "$INTERFACE" -j TRAFFIC_MONITOR 2>/dev/null; then
     /sbin/iptables -A OUTPUT -o "$INTERFACE" -j TRAFFIC_MONITOR
 fi
 
 # ==========================================
-# Core Traffic Aggregation & Logic
+# 📊 流量统计与看板输出
 # ==========================================
-# Extract byte counts cleanly, taking only the last line to ensure an exact integer output
 CURRENT_BYTES=$(/sbin/iptables -L OUTPUT -v -n -x | grep "TRAFFIC_MONITOR" | awk '{print $2}' | tail -n 1)
-
-if [ -z "$CURRENT_BYTES" ]; then
-    echo "Error: Failed to fetch data from iptables counter."
-    exit 1
-fi
-
-# Calculate current traffic in GB (formatted to 4 decimal places)
+[ -z "$CURRENT_BYTES" ] && CURRENT_BYTES=0
 CURRENT_GB=$(awk -v bytes="$CURRENT_BYTES" 'BEGIN {printf "%.4f", bytes / 1024 / 1024 / 1024}')
 
-# Print logs
-echo "Interface: ${INTERFACE} | Current Outbound Traffic: ${CURRENT_GB} GB / Limit: ${QUOTA_GB} GB"
+echo "=================================================="
+echo " 网卡设备: ${INTERFACE}"
+echo " 流量统计: 正在运行中... (自上次清零起算)"
+echo " 预期预测: 如果现在清零，新周期截止大约在: ${END_DATE}"
+echo " 流量状态: ${CURRENT_GB} GB / 限额 ${QUOTA_GB} GB"
+echo "=================================================="
 
-# Safe integer conversion for comparison using Bash internal arithmetic
 QUOTA_BYTES=$(( QUOTA_GB * 1024 * 1024 * 1024 ))
-
-# Network Kill Decision Logic
 if [ "$CURRENT_BYTES" -gt "$QUOTA_BYTES" ]; then
-    echo "WARNING: Traffic limit exceeded ${QUOTA_GB}GB! Activating network-kill protection..."
-    
-    # Check if protection rules are already in place to avoid duplicate rule appending
+    echo "警告：流量已超过限额！正在实施断网保护..."
     if ! /sbin/iptables -C TRAFFIC_MONITOR -p tcp --dport 22 -j ACCEPT 2>/dev/null; then
-        # 1. Whitelist SSH Port 22 (Inbound & Outbound to ensure you never get disconnected)
         /sbin/iptables -I TRAFFIC_MONITOR -p tcp --sport 22 -j ACCEPT
         /sbin/iptables -I TRAFFIC_MONITOR -p tcp --dport 22 -j ACCEPT
-        
-        # 2. DROP all other outbound packets traveling through the active public interface
         /sbin/iptables -A TRAFFIC_MONITOR -j DROP
-        echo "Protection active. All non-SSH outbound traffic is now blocked."
+        echo "断网保护已生效。仅保留 SSH 连接。"
     fi
 fi
 EOF
-
-# Grant execution permissions
 chmod +x /usr/local/bin/traffic_quota.sh
 
 ```
 
-### Step 3: Configure the `liuliang` Shortcut Command
+---
 
-Inject a global shell alias into the system Bash profile so you can monitor your traffic by typing just 6 letters:
+### 第三步：配置快捷查询命令 `liuliang`
 
 ```bash
 echo "alias liuliang='/usr/local/bin/traffic_quota.sh'" >> /etc/bash.bashrc
@@ -118,63 +183,49 @@ source /etc/bash.bashrc
 
 ```
 
-### Step 4: Automate via Cron Daemons
+---
 
-1. Open the crontab scheduler configuration:
-```bash
-crontab -e
+### 第四步：根据所选版本，配置对应的定时任务（Crontab）
+
+运行 `crontab -e` 打开编辑器，移到**最底部**，根据第二步选择的版本，粘贴对应的配置：
+
+* **如果选了【方案 A：GCP 专属自然月版】**，粘贴这一行即可（脚本内部会自动判断跨月清零）：
+```text
+*/5 * * * * /usr/local/bin/traffic_quota.sh >> /var/log/traffic_quota.log 2>&1
 
 ```
 
 
-2. Paste the following two standard configurations at the **very bottom** of the file (ensure each rule occupies its own separate line with no stray symbols at the end):
+* **如果选了【方案 B：固定 30 天轮询版】**，必须粘贴以下两行（第二行负责强制每 30 天清空计数器）：
 ```text
-# Run traffic quota check every 5 minutes
 */5 * * * * /usr/local/bin/traffic_quota.sh >> /var/log/traffic_quota.log 2>&1
-
-# Automatically reset/flush the traffic counter at midnight every 30 days
 0 0 */30 * * /sbin/iptables -Z TRAFFIC_MONITOR >> /var/log/traffic_quota.log 2>&1
 
 ```
 
 
-3. Save and exit the editor. When the terminal prompts `crontab: installing new crontab`, your automated firewall shield is officially operational.
 
 ---
 
-## 📊 Everyday Management Commands
+## 📊 日常维护
 
-### 1. Check Real-time Traffic Consumption
+### 1. 实时查看流量状态
 
-Type the shortcut command from any directory path in the terminal:
+在终端直接键入：
 
 ```bash
 liuliang
 
 ```
 
-**Example Output:**
+### 2. 流量超标断网后，如何手动恢复？
 
-> Interface: ens4 | Current Outbound Traffic: 0.0695 GB / Limit: 190 GB
-
-### 2. Audit Background Cron Automation Logs
-
-Inspect the execution history to verify that the script is running properly every 5 minutes:
+当进入了新的计费周期需要复活网络，或者需要临时解除限制时，输入以下两条命令即可重置：
 
 ```bash
-tail -n 10 /var/log/traffic_quota.log
-
-```
-
-### 3. How to Unblock the Network Manually?
-
-If your network gets locked because you hit the traffic ceiling and you need to lift the ban immediately (or when a new billing cycle rolls over), execute these two quick commands to **flush the block rules and reset the data counter**:
-
-```bash
-# 1. Flush all DROP blocks inside the TRAFFIC_MONITOR chain
+# 清空 TRAFFIC_MONITOR 链中产生的封禁规则
 /sbin/iptables -F TRAFFIC_MONITOR
-
-# 2. Zero-out the data counter back to 0 bytes
+# 将流量计数账本归零
 /sbin/iptables -Z TRAFFIC_MONITOR
 
 ```
