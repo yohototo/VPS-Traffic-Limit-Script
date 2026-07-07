@@ -232,8 +232,7 @@ liuliang
 # 查看后台定时任务运行日志
 检查脚本在后台是否有每 5 分钟准时“打卡”记录：
 
-```
-Bash
+```Bash
 tail -n 10 /var/log/traffic_quota.log
 
 ---
